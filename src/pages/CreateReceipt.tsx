@@ -139,8 +139,15 @@ const CreateReceipt = () => {
         }
       }
 
+      const createLocalId = () => {
+        if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+          return crypto.randomUUID();
+        }
+        return `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      };
+
       const receiptPayload = {
-        id: crypto.randomUUID(),
+        id: createLocalId(),
         user_id: currentUserId,
         receipt_number: receiptNumber,
         customer_name: parsed.data.customer_name,
