@@ -8,6 +8,7 @@ import { ReceiptDocument } from "@/components/ReceiptDocument";
 import { Button } from "@/components/ui/button";
 import { downloadBlob, renderReceiptToPdf, uploadReceiptPdf } from "@/lib/pdf";
 import { whatsappLinkForCustomer, BUSINESS, OPEN_SITE_USER_ID } from "@/lib/business";
+import { getLocalReceipt } from "@/lib/receipt-storage";
 import { ArrowLeft, Copy, Download, Loader2, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -24,11 +25,37 @@ const ReceiptView = () => {
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const { data, error } = await supabase.from("receipts").select("*").eq("id", id).maybeSingle();
-      if (error) toast.error(error.message);
-      else if (!data) toast.error("Receipt not found");
-      else setReceipt(data as Receipt);
-      setLoading(false);
+      try {
+        const { data, error } = await supabase.from("receipts").select("*").eq("id", id).maybeSingle();
+        if (error) {
+          console.warn("Supabase receipt lookup failed, trying local fallback.", error);
+          const localReceipt = getLocalReceipt(id);
+          if (localReceipt) {
+            setReceipt(localReceipt);
+          } else {
+            toast.error(error.message);
+          }
+        } else if (!data) {
+          const localReceipt = getLocalReceipt(id);
+          if (localReceipt) {
+            setReceipt(localReceipt);
+          } else {
+            toast.error("Receipt not found");
+          }
+        } else {
+          setReceipt(data as Receipt);
+        }
+      } catch (lookupError: any) {
+        console.warn("Receipt lookup failed, trying local fallback.", lookupError);
+        const localReceipt = getLocalReceipt(id);
+        if (localReceipt) {
+          setReceipt(localReceipt);
+        } else {
+          toast.error(lookupError?.message ?? "Receipt not found");
+        }
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [id]);
 

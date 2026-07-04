@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { BUSINESS, formatNGN, OPEN_SITE_USER_ID } from "@/lib/business";
 import { toast } from "sonner";
 import { Receipt } from "@/types/receipt";
+import { saveLocalReceipt } from "@/lib/receipt-storage";
 import { ArrowLeft, ImagePlus, Loader2, Sparkles } from "lucide-react";
 
 const schema = z.object({
@@ -111,46 +112,88 @@ const CreateReceipt = () => {
         throw new Error("Open-site user ID is not configured. Set VITE_SUPABASE_OPEN_USER_ID.");
       }
 
-      // Generate receipt number via secure function
-      const { data: rn, error: rnErr } = await supabase.rpc("generate_receipt_number", {
-        _user_id: currentUserId,
-      });
-      if (rnErr || !rn) throw rnErr ?? new Error("Could not generate receipt number");
+      let receiptNumber = `BNV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-      // Upload image if provided
-      let imageUrl: string | null = existingImageUrl;
-      if (imageFile) {
-        const ext = imageFile.name.split(".").pop()?.toLowerCase() || "jpg";
-        const path = `${currentUserId}/${rn}.${ext}`;
-        const { error: upErr } = await supabase.storage
-          .from("product-images")
-          .upload(path, imageFile, { upsert: true, contentType: imageFile.type });
-        if (upErr) throw upErr;
-        imageUrl = supabase.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+      try {
+        const { data: rn, error: rnErr } = await supabase.rpc("generate_receipt_number", {
+          _user_id: currentUserId,
+        });
+        if (!rnErr && rn) receiptNumber = rn;
+      } catch (rpcError) {
+        console.warn("RPC receipt number generation failed, using local fallback.", rpcError);
       }
 
-      const { data: inserted, error: insErr } = await supabase
-        .from("receipts")
-        .insert({
-          user_id: currentUserId,
-          receipt_number: rn,
-          customer_name: parsed.data.customer_name,
-          customer_phone: parsed.data.customer_phone,
-          customer_address: parsed.data.customer_address ?? null,
-          product_name: parsed.data.product_name,
-          product_color: parsed.data.product_color ?? null,
-          serial_number: parsed.data.serial_number ?? null,
-          part_number: parsed.data.part_number ?? null,
-          price: parsed.data.price,
-          product_image_url: imageUrl,
-          warranty_note: parsed.data.warranty_note,
-        })
-        .select("id")
-        .single();
-      if (insErr || !inserted) throw insErr ?? new Error("Could not save receipt");
+      let imageUrl: string | null = existingImageUrl;
+      if (imageFile) {
+        try {
+          const ext = imageFile.name.split(".").pop()?.toLowerCase() || "jpg";
+          const path = `${currentUserId}/${receiptNumber}.${ext}`;
+          const { error: upErr } = await supabase.storage
+            .from("product-images")
+            .upload(path, imageFile, { upsert: true, contentType: imageFile.type });
+          if (!upErr) {
+            imageUrl = supabase.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+          }
+        } catch (imageError) {
+          console.warn("Image upload failed, continuing without it.", imageError);
+        }
+      }
 
-      toast.success("Receipt issued.");
-      navigate(`/receipt/${inserted.id}`);
+      const receiptPayload = {
+        id: crypto.randomUUID(),
+        user_id: currentUserId,
+        receipt_number: receiptNumber,
+        customer_name: parsed.data.customer_name,
+        customer_phone: parsed.data.customer_phone,
+        customer_address: parsed.data.customer_address ?? null,
+        product_name: parsed.data.product_name,
+        product_color: parsed.data.product_color ?? null,
+        serial_number: parsed.data.serial_number ?? null,
+        part_number: parsed.data.part_number ?? null,
+        price: parsed.data.price,
+        product_image_url: imageUrl,
+        pdf_url: null,
+        warranty_note: parsed.data.warranty_note,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as Receipt;
+
+      try {
+        const { data: inserted, error: insErr } = await supabase
+          .from("receipts")
+          .insert({
+            user_id: currentUserId,
+            receipt_number: receiptPayload.receipt_number,
+            customer_name: receiptPayload.customer_name,
+            customer_phone: receiptPayload.customer_phone,
+            customer_address: receiptPayload.customer_address,
+            product_name: receiptPayload.product_name,
+            product_color: receiptPayload.product_color,
+            serial_number: receiptPayload.serial_number,
+            part_number: receiptPayload.part_number,
+            price: receiptPayload.price,
+            product_image_url: receiptPayload.product_image_url,
+            warranty_note: receiptPayload.warranty_note,
+          })
+          .select("id")
+          .single();
+
+        if (!insErr && inserted) {
+          toast.success("Receipt issued.");
+          navigate(`/receipt/${inserted.id}`);
+          return;
+        }
+
+        if (insErr) {
+          console.warn("Supabase insert failed, saving locally instead.", insErr);
+        }
+      } catch (insertError) {
+        console.warn("Supabase insert failed, saving locally instead.", insertError);
+      }
+
+      const savedReceipt = saveLocalReceipt(receiptPayload);
+      toast.success("Receipt issued locally while the remote service is unavailable.");
+      navigate(`/receipt/${savedReceipt.id}`);
     } catch (err: any) {
       console.error("Receipt issue failed:", err);
       toast.error(err?.message ?? "Something went wrong");
